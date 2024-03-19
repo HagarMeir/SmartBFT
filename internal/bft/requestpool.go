@@ -333,7 +333,7 @@ func (rp *Pool) NextRequests(maxCount int, maxSizeBytes uint64, check bool) (bat
 
 // Prune removes requests for which the given predicate returns error.
 func (rp *Pool) Prune(predicate func([]byte) error) {
-	reqVec, infoVec := rp.copyRequests()
+	reqVec, infoVec := rp.CopyRequests()
 
 	var numPruned int
 	for i, req := range reqVec {
@@ -353,7 +353,7 @@ func (rp *Pool) Prune(predicate func([]byte) error) {
 	rp.logger.Debugf("Pruned %d requests", numPruned)
 }
 
-func (rp *Pool) copyRequests() (requestVec [][]byte, infoVec []types.RequestInfo) {
+func (rp *Pool) CopyRequests() (requestVec [][]byte, infoVec []types.RequestInfo) {
 	rp.lock.Lock()
 	defer rp.lock.Unlock()
 

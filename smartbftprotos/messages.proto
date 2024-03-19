@@ -23,6 +23,7 @@ message Message {
         HeartBeatResponse heart_beat_response = 8;
         StateTransferRequest state_transfer_request = 9;
         StateTransferResponse state_transfer_response = 10;
+        TXPoolBroadcast tx_pool_broadcast = 11;
     }
 }
 
@@ -126,4 +127,14 @@ message StateTransferRequest {
 message StateTransferResponse {
     uint64 view_num = 1;
     uint64 sequence = 2;
+}
+
+message TX {
+    string id = 1;
+    string client_id = 2;
+    bytes req = 3;
+}
+
+message TXPoolBroadcast {
+    repeated TX txs = 1;
 }

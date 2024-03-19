@@ -42,8 +42,9 @@ type Batcher interface {
 
 // RequestPool is a pool of client's requests
 //
-//go:generate mockery -dir . -name RequestPool -case underscore -output ./mocks/
+//go:generate mockery --dir . --name RequestPool --case underscore --output ./mocks/
 type RequestPool interface {
+	CopyRequests() (requestVec [][]byte, infoVec []types.RequestInfo)
 	Prune(predicate func([]byte) error)
 	Submit(request []byte) error
 	Size() int
@@ -110,6 +111,8 @@ type Controller struct {
 	Checkpoint         *types.Checkpoint
 	ViewChanger        *ViewChanger
 	Collector          *StateCollector
+	CensorProtect      bool
+	CensorProtector    *CensorProtector
 	State              State
 	InFlight           *InFlightData
 	MetricsView        *api.MetricsView
@@ -338,6 +341,9 @@ func (c *Controller) ProcessMessages(sender uint64, m *protos.Message) {
 		c.respondToStateTransferRequest(sender)
 	case *protos.Message_StateTransferResponse:
 		c.Collector.HandleMessage(sender, m)
+	case *protos.Message_TxPoolBroadcast:
+		c.CensorProtector.HandleMessage(sender, m)
+
 	default:
 		c.Logger.Warnf("Unexpected message type, ignoring")
 	}
@@ -555,6 +561,39 @@ func (c *Controller) decide(d decision) {
 	if iAm, _ := c.iAmTheLeader(); iAm {
 		c.acquireLeaderToken()
 	}
+
+	if c.CensorProtect {
+		c.runCollectPhase()
+	}
+
+}
+
+func (c *Controller) runCollectPhase() {
+
+	requests, info := c.RequestPool.CopyRequests()
+	c.RequestPool.Size()
+	txs := make([]*protos.TX, 0, 2*c.RequestPool.Size())
+	for i, req := range requests {
+		txs = append(txs, &protos.TX{
+			Id:       info[i].ID,
+			ClientId: info[i].ClientID,
+			Req:      req,
+		})
+	}
+
+	msg := &protos.Message{
+		Content: &protos.Message_TxPoolBroadcast{
+			TxPoolBroadcast: &protos.TXPoolBroadcast{Txs: txs},
+		},
+	}
+
+	c.Logger.Debugf("Sending pool to self")
+	c.SendConsensus(c.ID, msg) // send to self
+	c.Logger.Debugf("Broadcasting pool")
+	c.BroadcastConsensus(msg)
+	c.Logger.Debugf("Collecting pools")
+	c.CensorProtector.CollectPools()
+
 }
 
 func (c *Controller) checkIfRotate(blacklist []uint64) bool {
@@ -794,6 +833,13 @@ func (c *Controller) Start(startViewNumber uint64, startProposalSequence uint64,
 	c.Logger.Debugf("The number of nodes (N) is %d, F is %d, and the quorum size is %d", c.N, F, Q)
 	c.quorum = Q
 
+	c.CensorProtector = &CensorProtector{
+		SelfID: c.ID,
+		N:      c.N,
+		Logger: c.Logger,
+	}
+	c.CensorProtector.Start()
+
 	c.verificationSequence.Store(c.Verifier.VerificationSequence())
 
 	if syncOnStart {
@@ -829,6 +875,7 @@ func (c *Controller) close() {
 // Stop the controller
 func (c *Controller) Stop() {
 	c.close()
+	c.CensorProtector.Stop()
 	c.Batcher.Close()
 	c.RequestPool.Close()
 	c.LeaderMonitor.Close()
@@ -846,6 +893,7 @@ func (c *Controller) Stop() {
 // StopWithPoolPause the controller but only stop the requests pool timers
 func (c *Controller) StopWithPoolPause() {
 	c.close()
+	c.CensorProtector.Stop()
 	c.Batcher.Close()
 	c.RequestPool.StopTimers()
 	c.LeaderMonitor.Close()

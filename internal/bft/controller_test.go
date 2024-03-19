@@ -177,6 +177,8 @@ func TestLeaderPropose(t *testing.T) {
 	}).Return(types.Reconfig{InLatestDecision: false})
 	reqPool := &mocks.RequestPool{}
 	reqPool.On("Prune", mock.Anything)
+	reqPool.On("Size").Return(0)
+	reqPool.On("CopyRequests").Return(nil, nil)
 	reqPool.On("Close")
 	leaderMon := &mocks.LeaderMonitor{}
 	leaderMon.On("ChangeRole", bft.Leader, mock.Anything, mock.Anything)
@@ -227,6 +229,7 @@ func TestLeaderPropose(t *testing.T) {
 		Collector:     &collector,
 		StartedWG:     &startedWG,
 		MetricsView:   api.NewMetricsView(&disabled.Provider{}),
+		CensorProtect: true,
 	}
 	controller.Deliver = &bft.MutuallyExclusiveDeliver{C: controller}
 
@@ -248,10 +251,25 @@ func TestLeaderPropose(t *testing.T) {
 	commit37 := proto.Clone(commit3).(*protos.Message)
 	commit37Get := commit37.GetCommit()
 	commit37Get.Signature.Signer = 37
-	appWG.Add(1)  // deliver
-	commWG.Add(6) // next proposal
+	appWG.Add(1)   // deliver
+	commWG.Add(10) // next proposal + pools
 	controller.ProcessMessages(37, commit37)
 	appWG.Wait()
+	controller.ProcessMessages(17, &protos.Message{
+		Content: &protos.Message_TxPoolBroadcast{
+			TxPoolBroadcast: &protos.TXPoolBroadcast{Txs: nil},
+		},
+	})
+	controller.ProcessMessages(23, &protos.Message{
+		Content: &protos.Message_TxPoolBroadcast{
+			TxPoolBroadcast: &protos.TXPoolBroadcast{Txs: nil},
+		},
+	})
+	controller.ProcessMessages(37, &protos.Message{
+		Content: &protos.Message_TxPoolBroadcast{
+			TxPoolBroadcast: &protos.TXPoolBroadcast{Txs: nil},
+		},
+	})
 	commWG.Wait()
 
 	controller.Stop()
