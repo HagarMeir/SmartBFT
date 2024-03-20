@@ -6,9 +6,10 @@
 package bft
 
 import (
+	"sync"
+
 	"github.com/hyperledger-labs/SmartBFT/pkg/api"
 	protos "github.com/hyperledger-labs/SmartBFT/smartbftprotos"
-	"sync"
 )
 
 type CensorProtector struct {
@@ -25,6 +26,8 @@ type CensorProtector struct {
 
 	stopOnce sync.Once
 	stopChan chan struct{}
+
+	set []string
 }
 
 func (c *CensorProtector) Start() {
@@ -80,6 +83,7 @@ func (c *CensorProtector) ClearCollected() {
 		<-c.incMsgs
 	}
 	c.pools.clear(c.N)
+	c.set = nil
 }
 
 func (c *CensorProtector) CollectPools() {
@@ -109,5 +113,31 @@ func (c *CensorProtector) collectEnoughPools() bool {
 }
 
 func (c *CensorProtector) calculateSet() {
+	counters := make(map[string]int, 0)
+	num := len(c.pools.votes)
+	for i := 0; i < num; i++ {
+		vote := <-c.pools.votes
+		pool := vote.GetTxPoolBroadcast()
+		if pool == nil {
+			c.Logger.Panicf("Node %d collected a message which is not a pool", c.SelfID)
+			return
+		}
+		for _, tx := range pool.Txs {
+			counters[tx.Id]++
+		}
+	}
 
+	var set []string
+	for tx, count := range counters {
+		if count >= c.q {
+			set = append(set, tx)
+			c.Logger.Debugf("Node %d added tx %s to its set", c.SelfID, tx)
+		}
+	}
+
+	c.set = set
+}
+
+func (c *CensorProtector) GetSet() []string {
+	return c.set
 }
