@@ -267,6 +267,8 @@ type ProposalMaker struct {
 	ViewSequences      *atomic.Value
 	restoreOnceFromWAL sync.Once
 	Checkpoint         *types.Checkpoint
+	CensorProtect      bool
+	CensorProtector    *CensorProtector
 }
 
 // NewProposer returns a new view
@@ -295,6 +297,8 @@ func (pm *ProposalMaker) NewProposer(leader, proposalSequence, viewNum, decision
 		ViewSequences:      pm.ViewSequences,
 		MetricsBlacklist:   pm.MetricsBlacklist,
 		MetricsView:        pm.MetricsView,
+		CensorProtect:      pm.CensorProtect,
+		CensorProtector:    pm.CensorProtector,
 	}
 
 	view.ViewSequences.Store(ViewSequence{

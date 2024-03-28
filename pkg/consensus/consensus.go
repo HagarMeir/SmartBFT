@@ -336,6 +336,8 @@ func (c *Consensus) proposalMaker() *algorithm.ProposalMaker {
 		NodesList:          c.nodes,
 		InMsqQSize:         int(c.Config.IncomingMessageBufferSize),
 		ViewSequences:      c.controller.ViewSequences,
+		CensorProtect:      c.Config.CensorProtect,
+		CensorProtector:    c.controller.CensorProtector,
 	}
 }
 
@@ -439,6 +441,7 @@ func (c *Consensus) createComponents() {
 		State:              c.state,
 		InFlight:           c.inFlight,
 		MetricsView:        c.Metrics.MetricsView,
+		CensorProtect:      c.Config.CensorProtect,
 	}
 	c.controller.Deliver = &algorithm.MutuallyExclusiveDeliver{C: c.controller}
 

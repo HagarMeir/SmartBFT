@@ -9,7 +9,9 @@ import (
 	"sync"
 
 	"github.com/hyperledger-labs/SmartBFT/pkg/api"
+	"github.com/hyperledger-labs/SmartBFT/pkg/types"
 	protos "github.com/hyperledger-labs/SmartBFT/smartbftprotos"
+	"github.com/pkg/errors"
 )
 
 type CensorProtector struct {
@@ -86,19 +88,17 @@ func (c *CensorProtector) ClearCollected() {
 	c.set = nil
 }
 
-func (c *CensorProtector) CollectPools() {
-	c.pools.clear(c.N)
+func (c *CensorProtector) CollectPools() [][]byte {
 	for {
 		select {
 		case <-c.stopChan:
-			return
+			return nil
 		case msg := <-c.incMsgs:
 			c.pools.registerVote(msg.sender, msg.Message)
 			c.Logger.Debugf("Node %d registered a pool: %+v; sender: %d", c.SelfID, msg.Message, msg.sender)
 			if c.collectEnoughPools() {
 				c.Logger.Debugf("Node %d collected enough pools", c.SelfID)
-				c.calculateSet()
-				return
+				return c.calculateSet()
 			}
 		}
 	}
@@ -112,18 +112,20 @@ func (c *CensorProtector) collectEnoughPools() bool {
 	return true
 }
 
-func (c *CensorProtector) calculateSet() {
+func (c *CensorProtector) calculateSet() [][]byte {
 	counters := make(map[string]int, 0)
 	num := len(c.pools.votes)
+	var requests [][]byte
 	for i := 0; i < num; i++ {
 		vote := <-c.pools.votes
 		pool := vote.GetTxPoolBroadcast()
 		if pool == nil {
 			c.Logger.Panicf("Node %d collected a message which is not a pool", c.SelfID)
-			return
+			return nil
 		}
 		for _, tx := range pool.Txs {
 			counters[tx.Id]++
+			requests = append(requests, tx.Req)
 		}
 	}
 
@@ -136,8 +138,21 @@ func (c *CensorProtector) calculateSet() {
 	}
 
 	c.set = set
+
+	return requests
 }
 
-func (c *CensorProtector) GetSet() []string {
-	return c.set
+func (c *CensorProtector) VerifyProposed(requests []types.RequestInfo) error {
+	for _, id := range c.set {
+		found := false
+		for _, req := range requests {
+			if id == req.ID {
+				found = true
+			}
+		}
+		if !found {
+			return errors.Errorf("Node %d did not find request %s in the proposal", c.SelfID, id)
+		}
+	}
+	return nil
 }

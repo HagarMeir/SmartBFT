@@ -251,10 +251,12 @@ func TestLeaderPropose(t *testing.T) {
 	commit37 := proto.Clone(commit3).(*protos.Message)
 	commit37Get := commit37.GetCommit()
 	commit37Get.Signature.Signer = 37
-	appWG.Add(1)   // deliver
-	commWG.Add(10) // next proposal + pools
+	appWG.Add(1)  // deliver
+	commWG.Add(4) // pools
 	controller.ProcessMessages(37, commit37)
 	appWG.Wait()
+	commWG.Wait()
+	commWG.Add(6) // next proposal
 	controller.ProcessMessages(17, &protos.Message{
 		Content: &protos.Message_TxPoolBroadcast{
 			TxPoolBroadcast: &protos.TXPoolBroadcast{Txs: nil},

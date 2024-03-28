@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/hyperledger-labs/SmartBFT/internal/bft"
+	"github.com/hyperledger-labs/SmartBFT/pkg/types"
 	protos "github.com/hyperledger-labs/SmartBFT/smartbftprotos"
 	"github.com/stretchr/testify/assert"
 	"go.uber.org/zap"
@@ -86,7 +87,7 @@ func TestCollectPools(t *testing.T) {
 
 }
 
-func TestCalculateSet(t *testing.T) {
+func TestCalculateSetAndVerify(t *testing.T) {
 	basicLog, err := zap.NewDevelopment()
 	assert.NoError(t, err)
 	log := basicLog.Sugar()
@@ -99,14 +100,13 @@ func TestCalculateSet(t *testing.T) {
 
 	protector.Start()
 
-	set := protector.GetSet()
-	assert.Len(t, set, 0)
-
-	tx1 := &protos.TX{Id: "tx1"}
-	tx2 := &protos.TX{Id: "tx2"}
-	tx3 := &protos.TX{Id: "tx3"}
+	tx1 := &protos.TX{Id: "tx1", Req: []byte{11}}
+	tx2 := &protos.TX{Id: "tx2", Req: []byte{22}}
+	tx3 := &protos.TX{Id: "tx3", Req: []byte{33}}
 	txs := make([]*protos.TX, 0)
 	txs = append(txs, tx1, tx2, tx3)
+	reqs := make([]types.RequestInfo, 0)
+	reqs = append(reqs, types.RequestInfo{ID: tx1.Id}, types.RequestInfo{ID: tx2.Id}, types.RequestInfo{ID: tx3.Id})
 
 	msg := &protos.Message{
 		Content: &protos.Message_TxPoolBroadcast{
@@ -117,8 +117,6 @@ func TestCalculateSet(t *testing.T) {
 	}
 
 	protector.ClearCollected()
-	set = protector.GetSet()
-	assert.Len(t, set, 0)
 
 	go func() {
 		protector.HandleMessage(2, msg)
@@ -127,8 +125,7 @@ func TestCalculateSet(t *testing.T) {
 	}()
 
 	protector.CollectPools()
-	set = protector.GetSet()
-	assert.Len(t, set, 3)
+	assert.NoError(t, protector.VerifyProposed(reqs))
 
 	txs12 := make([]*protos.TX, 0)
 	txs12 = append(txs12, tx1, tx2)
@@ -141,8 +138,6 @@ func TestCalculateSet(t *testing.T) {
 	}
 
 	protector.ClearCollected()
-	set = protector.GetSet()
-	assert.Len(t, set, 0)
 
 	go func() {
 		protector.HandleMessage(2, msg)
@@ -151,8 +146,9 @@ func TestCalculateSet(t *testing.T) {
 	}()
 
 	protector.CollectPools()
-	set = protector.GetSet()
-	assert.Len(t, set, 2)
+	assert.NoError(t, protector.VerifyProposed(reqs))
+	assert.NoError(t, protector.VerifyProposed(reqs[0:2]))
+	assert.Error(t, protector.VerifyProposed(reqs[0:1]))
 
 	txs3 := make([]*protos.TX, 0)
 	txs3 = append(txs3, tx3)
@@ -165,8 +161,6 @@ func TestCalculateSet(t *testing.T) {
 	}
 
 	protector.ClearCollected()
-	set = protector.GetSet()
-	assert.Len(t, set, 0)
 
 	go func() {
 		protector.HandleMessage(2, msg)
@@ -175,8 +169,9 @@ func TestCalculateSet(t *testing.T) {
 	}()
 
 	protector.CollectPools()
-	set = protector.GetSet()
-	assert.Len(t, set, 1)
+	assert.NoError(t, protector.VerifyProposed(reqs))
+	assert.Error(t, protector.VerifyProposed(reqs[0:2]))
+	assert.NoError(t, protector.VerifyProposed(reqs[2:3]))
 
 	protector.Stop()
 }

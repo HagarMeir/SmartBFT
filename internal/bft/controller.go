@@ -587,12 +587,17 @@ func (c *Controller) runCollectPhase() {
 		},
 	}
 
-	c.Logger.Debugf("Sending pool to self")
+	c.CensorProtector.ClearCollected()
+
 	c.SendConsensus(c.ID, msg) // send to self
-	c.Logger.Debugf("Broadcasting pool")
 	c.BroadcastConsensus(msg)
-	c.Logger.Debugf("Collecting pools")
-	c.CensorProtector.CollectPools()
+	requestsToSubmit := c.CensorProtector.CollectPools()
+
+	for _, req := range requestsToSubmit {
+		if err := c.RequestPool.Submit(req); err != nil {
+			c.Logger.Debugf("Request %s was not submitted, error: %s", info, err)
+		}
+	}
 
 }
 

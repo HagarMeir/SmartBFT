@@ -121,6 +121,9 @@ type View struct {
 	viewEnded          sync.WaitGroup
 
 	ViewSequences *atomic.Value
+
+	CensorProtect   bool
+	CensorProtector *CensorProtector
 }
 
 // Start starts the view
@@ -556,6 +559,13 @@ func (v *View) verifyProposal(proposal types.Proposal, prevCommits []*protos.Sig
 	if err != nil {
 		v.Logger.Warnf("Received bad proposal: %v", err)
 		return nil, err
+	}
+
+	if v.CensorProtect {
+		if err := v.CensorProtector.VerifyProposed(requests); err != nil {
+			v.Logger.Warnf("Received bad proposal; suspecting censorship; %v", err)
+			return nil, err
+		}
 	}
 
 	// Verify proposal's metadata is valid.

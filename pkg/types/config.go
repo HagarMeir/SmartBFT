@@ -83,6 +83,8 @@ type Configuration struct {
 	// RequestPoolSubmitTimeout the total amount of time a client can wait for the submission of a single
 	// request into the request pool.
 	RequestPoolSubmitTimeout time.Duration
+
+	CensorProtect bool
 }
 
 // DefaultConfig contains reasonable values for a small cluster that resides on the same geography (or "Region"), but
