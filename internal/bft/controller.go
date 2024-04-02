@@ -564,6 +564,7 @@ func (c *Controller) decide(d decision) {
 
 	if c.CensorProtect {
 		c.runCollectPhase()
+		c.Logger.Debugf("Node %d finished running the collect phase", c.ID)
 	}
 
 }
@@ -838,13 +839,6 @@ func (c *Controller) Start(startViewNumber uint64, startProposalSequence uint64,
 	c.Logger.Debugf("The number of nodes (N) is %d, F is %d, and the quorum size is %d", c.N, F, Q)
 	c.quorum = Q
 
-	c.CensorProtector = &CensorProtector{
-		SelfID: c.ID,
-		N:      c.N,
-		Logger: c.Logger,
-	}
-	c.CensorProtector.Start()
-
 	c.verificationSequence.Store(c.Verifier.VerificationSequence())
 
 	if syncOnStart {
@@ -880,7 +874,6 @@ func (c *Controller) close() {
 // Stop the controller
 func (c *Controller) Stop() {
 	c.close()
-	c.CensorProtector.Stop()
 	c.Batcher.Close()
 	c.RequestPool.Close()
 	c.LeaderMonitor.Close()
@@ -898,7 +891,6 @@ func (c *Controller) Stop() {
 // StopWithPoolPause the controller but only stop the requests pool timers
 func (c *Controller) StopWithPoolPause() {
 	c.close()
-	c.CensorProtector.Stop()
 	c.Batcher.Close()
 	c.RequestPool.StopTimers()
 	c.LeaderMonitor.Close()

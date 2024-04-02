@@ -95,7 +95,7 @@ func (c *CensorProtector) CollectPools() [][]byte {
 			return nil
 		case msg := <-c.incMsgs:
 			c.pools.registerVote(msg.sender, msg.Message)
-			c.Logger.Debugf("Node %d registered a pool: %+v; sender: %d", c.SelfID, msg.Message, msg.sender)
+			c.Logger.Debugf("Node %d registered a pool from sender: %d ; %+v", c.SelfID, msg.sender, msg.Message)
 			if c.collectEnoughPools() {
 				c.Logger.Debugf("Node %d collected enough pools", c.SelfID)
 				return c.calculateSet()
@@ -124,6 +124,7 @@ func (c *CensorProtector) calculateSet() [][]byte {
 			return nil
 		}
 		for _, tx := range pool.Txs {
+			c.Logger.Debugf("Node %d is counting tx %s", c.SelfID, tx.Id)
 			counters[tx.Id]++
 			requests = append(requests, tx.Req)
 		}
@@ -147,6 +148,7 @@ func (c *CensorProtector) VerifyProposed(requests []types.RequestInfo) error {
 		found := false
 		for _, req := range requests {
 			if id == req.ID {
+				c.Logger.Debugf("Node %d found req %s", c.SelfID, req.ID)
 				found = true
 			}
 		}

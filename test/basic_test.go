@@ -60,6 +60,69 @@ func TestBasic(t *testing.T) {
 	}
 }
 
+func TestBasicCensorship(t *testing.T) {
+	t.Parallel()
+	network := NewNetwork()
+	defer network.Shutdown()
+
+	testDir, err := os.MkdirTemp("", t.Name())
+	assert.NoErrorf(t, err, "generate temporary test dir")
+	defer os.RemoveAll(testDir)
+
+	numberOfNodes := 4
+	nodes := make([]*App, 0)
+	for i := 1; i <= numberOfNodes; i++ {
+		n := newNode(uint64(i), network, t.Name(), testDir, false, 0)
+		n.Consensus.Config.CensorProtect = true
+		nodes = append(nodes, n)
+	}
+
+	beforeDeliverWG := sync.WaitGroup{}
+	beforeDeliverWG.Add(numberOfNodes)
+	for _, n := range nodes {
+		baseLogger := n.Consensus.Logger.(*zap.SugaredLogger).Desugar()
+		n.Consensus.Logger = baseLogger.WithOptions(zap.Hooks(func(entry zapcore.Entry) error {
+			if strings.Contains(entry.Message, "Deciding on seq 1") {
+				beforeDeliverWG.Done()
+			}
+			return nil
+		})).Sugar()
+	}
+
+	startNodes(nodes, network)
+
+	// submit only to leader
+
+	nodes[0].Submit(Request{ID: "1", ClientID: "alice"})
+
+	beforeDeliverWG.Wait()
+
+	// submit to all nodes
+
+	for i := 0; i < numberOfNodes; i++ {
+		nodes[i].Submit(Request{ID: "2", ClientID: "alice"})
+	}
+
+	data := make([]*AppRecord, 0)
+	for i := 0; i < numberOfNodes; i++ {
+		d := <-nodes[i].Delivered
+		data = append(data, d)
+	}
+	for i := 0; i < numberOfNodes-1; i++ {
+		assert.Equal(t, data[i], data[i+1])
+	}
+
+	data = make([]*AppRecord, 0)
+	for i := 0; i < numberOfNodes; i++ {
+		d := <-nodes[i].Delivered
+		data = append(data, d)
+	}
+	for i := 0; i < numberOfNodes-1; i++ {
+		assert.Equal(t, data[i], data[i+1])
+	}
+
+}
+
 func TestNodeViewChangeWhileInPartition(t *testing.T) {
 	t.Parallel()
 	network := NewNetwork()

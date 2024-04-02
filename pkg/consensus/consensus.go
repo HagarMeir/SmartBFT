@@ -45,17 +45,18 @@ type Consensus struct {
 	Scheduler          <-chan time.Time
 	ViewChangerTicker  <-chan time.Time
 
-	submittedChan chan struct{}
-	inFlight      *algorithm.InFlightData
-	checkpoint    *types.Checkpoint
-	Pool          *algorithm.Pool
-	viewChanger   *algorithm.ViewChanger
-	controller    *algorithm.Controller
-	collector     *algorithm.StateCollector
-	state         *algorithm.PersistedState
-	numberOfNodes uint64
-	nodes         []uint64
-	nodeMap       sync.Map
+	submittedChan   chan struct{}
+	inFlight        *algorithm.InFlightData
+	checkpoint      *types.Checkpoint
+	Pool            *algorithm.Pool
+	viewChanger     *algorithm.ViewChanger
+	controller      *algorithm.Controller
+	collector       *algorithm.StateCollector
+	censorProtector *algorithm.CensorProtector
+	state           *algorithm.PersistedState
+	numberOfNodes   uint64
+	nodes           []uint64
+	nodeMap         sync.Map
 
 	consensusDone sync.WaitGroup
 	stopOnce      sync.Once
@@ -189,6 +190,7 @@ func (c *Consensus) reconfig(reconfig types.Reconfig) {
 	defer c.consensusLock.Unlock()
 
 	// make sure all components are stopped
+	c.censorProtector.Stop()
 	c.viewChanger.Stop()
 	c.controller.StopWithPoolPause()
 	c.collector.Stop()
@@ -282,6 +284,7 @@ func (c *Consensus) close() {
 
 func (c *Consensus) Stop() {
 	c.consensusLock.RLock()
+	c.censorProtector.Stop()
 	c.viewChanger.Stop()
 	c.controller.Stop()
 	c.collector.Stop()
@@ -337,7 +340,7 @@ func (c *Consensus) proposalMaker() *algorithm.ProposalMaker {
 		InMsqQSize:         int(c.Config.IncomingMessageBufferSize),
 		ViewSequences:      c.controller.ViewSequences,
 		CensorProtect:      c.Config.CensorProtect,
-		CensorProtector:    c.controller.CensorProtector,
+		CensorProtector:    c.censorProtector,
 	}
 }
 
@@ -418,6 +421,12 @@ func (c *Consensus) createComponents() {
 		CollectTimeout: c.Config.CollectTimeout,
 	}
 
+	c.censorProtector = &algorithm.CensorProtector{
+		SelfID: c.Config.SelfID,
+		N:      c.numberOfNodes,
+		Logger: c.Logger,
+	}
+
 	c.controller = &algorithm.Controller{
 		Checkpoint:         c.checkpoint,
 		WAL:                c.WAL,
@@ -442,6 +451,7 @@ func (c *Consensus) createComponents() {
 		InFlight:           c.inFlight,
 		MetricsView:        c.Metrics.MetricsView,
 		CensorProtect:      c.Config.CensorProtect,
+		CensorProtector:    c.censorProtector,
 	}
 	c.controller.Deliver = &algorithm.MutuallyExclusiveDeliver{C: c.controller}
 
@@ -517,6 +527,7 @@ func (c *Consensus) startComponents(view, seq, dec uint64, configSync bool) {
 	// If we delivered to the application proposal with sequence i,
 	// then we are expecting to be proposed a proposal with sequence i+1.
 	c.collector.Start()
+	c.censorProtector.Start()
 	c.viewChanger.Start(view)
 	if configSync {
 		c.controller.Start(view, seq+1, dec, c.Config.SyncOnStart)

@@ -205,31 +205,39 @@ func TestLeaderPropose(t *testing.T) {
 	}
 	collector.Start()
 
+	censorProtector := bft.CensorProtector{
+		SelfID: 11,
+		N:      4,
+		Logger: log,
+	}
+	censorProtector.Start()
+
 	startedWG := sync.WaitGroup{}
 	startedWG.Add(1)
 
 	controller := &bft.Controller{
-		InFlight:      &bft.InFlightData{},
-		RequestPool:   reqPool,
-		LeaderMonitor: leaderMon,
-		WAL:           wal,
-		ID:            17, // the leader
-		N:             4,
-		NodesList:     []uint64{11, 17, 23, 37},
-		Logger:        log,
-		Batcher:       batcher,
-		Verifier:      verifier,
-		Assembler:     assembler,
-		Comm:          comm,
-		Signer:        signer,
-		Application:   app,
-		Checkpoint:    &types.Checkpoint{},
-		ViewChanger:   &bft.ViewChanger{},
-		Synchronizer:  synchronizer,
-		Collector:     &collector,
-		StartedWG:     &startedWG,
-		MetricsView:   api.NewMetricsView(&disabled.Provider{}),
-		CensorProtect: true,
+		InFlight:        &bft.InFlightData{},
+		RequestPool:     reqPool,
+		LeaderMonitor:   leaderMon,
+		WAL:             wal,
+		ID:              17, // the leader
+		N:               4,
+		NodesList:       []uint64{11, 17, 23, 37},
+		Logger:          log,
+		Batcher:         batcher,
+		Verifier:        verifier,
+		Assembler:       assembler,
+		Comm:            comm,
+		Signer:          signer,
+		Application:     app,
+		Checkpoint:      &types.Checkpoint{},
+		ViewChanger:     &bft.ViewChanger{},
+		Synchronizer:    synchronizer,
+		Collector:       &collector,
+		StartedWG:       &startedWG,
+		MetricsView:     api.NewMetricsView(&disabled.Provider{}),
+		CensorProtect:   true,
+		CensorProtector: &censorProtector,
 	}
 	controller.Deliver = &bft.MutuallyExclusiveDeliver{C: controller}
 
@@ -299,6 +307,7 @@ func TestLeaderPropose(t *testing.T) {
 
 	controller.Stop()
 	collector.Stop()
+	censorProtector.Stop()
 	wal.Close()
 }
 
