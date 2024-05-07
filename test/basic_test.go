@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/hyperledger-labs/SmartBFT/internal/bft"
+	"github.com/hyperledger-labs/SmartBFT/pkg/types"
 	"github.com/hyperledger-labs/SmartBFT/smartbftprotos"
 	"github.com/stretchr/testify/assert"
 	"go.uber.org/zap"
@@ -74,33 +75,19 @@ func TestBasicCensorship(t *testing.T) {
 	for i := 1; i <= numberOfNodes; i++ {
 		n := newNode(uint64(i), network, t.Name(), testDir, false, 0)
 		n.Consensus.Config.CensorProtect = true
+		n.Consensus.Config.RequestBatchMaxCount = 2
+		n.censorTXLeaderID = 1
+		n.censorTXInfo = types.RequestInfo{ID: "3", ClientID: "alice"}
 		nodes = append(nodes, n)
-	}
-
-	beforeDeliverWG := sync.WaitGroup{}
-	beforeDeliverWG.Add(numberOfNodes)
-	for _, n := range nodes {
-		baseLogger := n.Consensus.Logger.(*zap.SugaredLogger).Desugar()
-		n.Consensus.Logger = baseLogger.WithOptions(zap.Hooks(func(entry zapcore.Entry) error {
-			if strings.Contains(entry.Message, "Deciding on seq 1") {
-				beforeDeliverWG.Done()
-			}
-			return nil
-		})).Sugar()
 	}
 
 	startNodes(nodes, network)
 
-	// submit only to leader
-
-	nodes[0].Submit(Request{ID: "1", ClientID: "alice"})
-
-	beforeDeliverWG.Wait()
-
-	// submit to all nodes
-
 	for i := 0; i < numberOfNodes; i++ {
+		nodes[i].Submit(Request{ID: "1", ClientID: "alice"})
 		nodes[i].Submit(Request{ID: "2", ClientID: "alice"})
+		nodes[i].Submit(Request{ID: "3", ClientID: "alice"})
+		nodes[i].Submit(Request{ID: "4", ClientID: "alice"})
 	}
 
 	data := make([]*AppRecord, 0)
@@ -120,7 +107,6 @@ func TestBasicCensorship(t *testing.T) {
 	for i := 0; i < numberOfNodes-1; i++ {
 		assert.Equal(t, data[i], data[i+1])
 	}
-
 }
 
 func TestNodeViewChangeWhileInPartition(t *testing.T) {

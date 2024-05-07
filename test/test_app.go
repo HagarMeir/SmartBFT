@@ -47,24 +47,26 @@ var fastConfig = types.Configuration{
 
 // App implements all interfaces required by an application using this library
 type App struct {
-	ID              uint64
-	Delivered       chan *AppRecord
-	Consensus       *consensus.Consensus
-	Setup           func()
-	Node            *Node
-	logLevel        zap.AtomicLevel
-	latestMD        *smartbftprotos.ViewMetadata
-	lastDecision    *types.Decision
-	clock           *time.Ticker
-	heartbeatTime   chan time.Time
-	viewChangeTime  chan time.Time
-	secondClock     *time.Ticker
-	logger          *zap.SugaredLogger
-	metricsProvider metrics.Provider
-	lastRecord      lastRecord
-	verificationSeq uint64
-	messageLost     func(*smartbftprotos.Message) bool
-	lock            sync.Mutex
+	ID               uint64
+	Delivered        chan *AppRecord
+	Consensus        *consensus.Consensus
+	Setup            func()
+	Node             *Node
+	logLevel         zap.AtomicLevel
+	latestMD         *smartbftprotos.ViewMetadata
+	lastDecision     *types.Decision
+	clock            *time.Ticker
+	heartbeatTime    chan time.Time
+	viewChangeTime   chan time.Time
+	secondClock      *time.Ticker
+	logger           *zap.SugaredLogger
+	metricsProvider  metrics.Provider
+	lastRecord       lastRecord
+	verificationSeq  uint64
+	messageLost      func(*smartbftprotos.Message) bool
+	censorTXInfo     types.RequestInfo
+	censorTXLeaderID uint64
+	lock             sync.Mutex
 }
 
 type lastRecord struct {
@@ -194,6 +196,11 @@ func (a *App) LoseMessages(filter func(*smartbftprotos.Message) bool) {
 	a.messageLost = filter
 }
 
+func (a *App) CensorTX(leaderID uint64, info types.RequestInfo) {
+	a.censorTXLeaderID = leaderID
+	a.censorTXInfo = info
+}
+
 // RequestID returns info about the given request
 func (a *App) RequestID(req []byte) types.RequestInfo {
 	txn := requestFromBytes(req)
@@ -268,9 +275,22 @@ func (a *App) SignProposal(_ types.Proposal, aux []byte) *types.Signature {
 
 // AssembleProposal assembles a new proposal from the given requests
 func (a *App) AssembleProposal(metadata []byte, requests [][]byte) types.Proposal {
+	reqs := requests
+	if a.censorTXLeaderID == a.ID {
+		a.logger.Debugf("In censor tx mode")
+		reqs = nil
+		for _, r := range requests {
+			req := requestFromBytes(r)
+			if a.censorTXInfo.ID == req.ID && a.censorTXInfo.ClientID == req.ClientID {
+				a.logger.Debugf("Censoring tx id %s and client id %s", req.ID, req.ClientID)
+				continue
+			}
+			reqs = append(reqs, r)
+		}
+	}
 	return types.Proposal{
 		VerificationSequence: int64(atomic.LoadUint64(&a.verificationSeq)),
-		Payload:              batch{Requests: requests}.toBytes(),
+		Payload:              batch{Requests: reqs}.toBytes(),
 		Metadata:             metadata,
 	}
 }

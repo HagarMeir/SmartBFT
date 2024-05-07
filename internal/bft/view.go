@@ -561,7 +561,7 @@ func (v *View) verifyProposal(proposal types.Proposal, prevCommits []*protos.Sig
 		return nil, err
 	}
 
-	if v.CensorProtect {
+	if v.CensorProtect && v.SelfID != v.LeaderID {
 		v.Logger.Debugf("Node %d is verifying the proposal with the censor protector", v.SelfID)
 		if err := v.CensorProtector.VerifyProposed(requests); err != nil {
 			v.Logger.Warnf("Received bad proposal; suspecting censorship; %v", err)
