@@ -70,7 +70,7 @@ func TestBasicCensorship(t *testing.T) {
 	assert.NoErrorf(t, err, "generate temporary test dir")
 	defer os.RemoveAll(testDir)
 
-	numberOfNodes := 4
+	numberOfNodes := 5
 	nodes := make([]*App, 0)
 	for i := 1; i <= numberOfNodes; i++ {
 		n := newNode(uint64(i), network, t.Name(), testDir, false, 0)

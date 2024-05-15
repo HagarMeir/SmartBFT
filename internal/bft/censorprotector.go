@@ -126,7 +126,9 @@ func (c *CensorProtector) calculateSet() [][]byte {
 		for _, tx := range pool.Txs {
 			c.Logger.Debugf("Node %d is counting tx %s", c.SelfID, tx.Id)
 			counters[tx.Id]++
-			requests = append(requests, tx.Req)
+			if counters[tx.Id] == 1 {
+				requests = append(requests, tx.Req)
+			}
 		}
 	}
 

@@ -572,14 +572,13 @@ func (c *Controller) decide(d decision) {
 func (c *Controller) runCollectPhase() {
 
 	requests, info := c.RequestPool.CopyRequests()
-	c.RequestPool.Size()
-	txs := make([]*protos.TX, 0, 2*c.RequestPool.Size())
+	txs := make([]*protos.TX, len(requests), 2*len(requests))
 	for i, req := range requests {
-		txs = append(txs, &protos.TX{
+		txs[i] = &protos.TX{
 			Id:       info[i].ID,
 			ClientId: info[i].ClientID,
 			Req:      req,
-		})
+		}
 	}
 
 	msg := &protos.Message{
