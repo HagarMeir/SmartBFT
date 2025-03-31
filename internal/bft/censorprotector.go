@@ -6,12 +6,12 @@
 package bft
 
 import (
+	"fmt"
 	"sync"
 
 	"github.com/hyperledger-labs/SmartBFT/pkg/api"
 	"github.com/hyperledger-labs/SmartBFT/pkg/types"
 	protos "github.com/hyperledger-labs/SmartBFT/smartbftprotos"
-	"github.com/pkg/errors"
 )
 
 type CensorProtector struct {
@@ -155,7 +155,7 @@ func (c *CensorProtector) VerifyProposed(requests []types.RequestInfo) error {
 			}
 		}
 		if !found {
-			return errors.Errorf("Node %d did not find request %s in the proposal", c.SelfID, id)
+			return fmt.Errorf("Node %d did not find request %s in the proposal", c.SelfID, id)
 		}
 	}
 	return nil
