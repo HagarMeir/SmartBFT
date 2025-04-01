@@ -29,7 +29,8 @@ type CensorProtector struct {
 	stopOnce sync.Once
 	stopChan chan struct{}
 
-	set []string
+	set     []string
+	setLock sync.RWMutex
 }
 
 func (c *CensorProtector) Start() {
@@ -85,7 +86,9 @@ func (c *CensorProtector) ClearCollected() {
 		<-c.incMsgs
 	}
 	c.pools.clear(c.N)
+	c.setLock.Lock()
 	c.set = nil
+	c.setLock.Unlock()
 }
 
 func (c *CensorProtector) CollectPools() [][]byte {
@@ -140,12 +143,16 @@ func (c *CensorProtector) calculateSet() [][]byte {
 		}
 	}
 
+	c.setLock.Lock()
 	c.set = set
+	c.setLock.Unlock()
 
 	return requests
 }
 
 func (c *CensorProtector) VerifyProposed(requests []types.RequestInfo) error {
+	c.setLock.RLock()
+	defer c.setLock.RUnlock()
 	for _, id := range c.set {
 		found := false
 		for _, req := range requests {
