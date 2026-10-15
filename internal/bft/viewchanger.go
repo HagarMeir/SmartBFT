@@ -1292,6 +1292,8 @@ func (v *ViewChanger) commitInFlightProposal(proposal *protos.Proposal) (success
 		Payload:              proposal.Payload,
 		Header:               proposal.Header,
 	}
+	// so that once the in flight proposal is decided its requests are removed from the pool
+	v.inFlightView.inFlightRequests = v.Verifier.RequestsFromProposal(*v.inFlightView.inFlightProposal)
 	v.inFlightView.myProposalSig = v.Signer.SignProposal(*v.inFlightView.inFlightProposal, nil)
 	v.inFlightView.lastBroadcastSent = &protos.Message{
 		Content: &protos.Message_Commit{
@@ -1312,6 +1314,7 @@ func (v *ViewChanger) commitInFlightProposal(proposal *protos.Proposal) (success
 	<-v.Ticker
 	<-v.Ticker
 
+	inFlightView.beginPrePrepare = time.Now() // the latency of processing the in flight proposal is measured from here
 	inFlightView.Start()
 	defer inFlightView.Abort()
 
