@@ -7,6 +7,7 @@ package bft_test
 
 import (
 	"errors"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -16,6 +17,7 @@ import (
 	"github.com/hyperledger/SmartBFT/internal/bft"
 	"github.com/hyperledger/SmartBFT/internal/bft/mocks"
 	"github.com/hyperledger/SmartBFT/pkg/api"
+	"github.com/hyperledger/SmartBFT/pkg/metrics"
 	"github.com/hyperledger/SmartBFT/pkg/metrics/disabled"
 	"github.com/hyperledger/SmartBFT/pkg/types"
 	protos "github.com/hyperledger/SmartBFT/smartbftprotos"
@@ -1935,6 +1937,8 @@ func TestCommitInFlight(t *testing.T) {
 	verifier := &mocks.VerifierMock{}
 	verifier.On("VerifySignature", mock.Anything).Return(nil)
 	verifier.On("VerifyConsenterSig", mock.Anything, mock.Anything).Return(nil, nil)
+	inFlightRequests := []types.RequestInfo{{ClientID: "1", ID: "1"}, {ClientID: "1", ID: "2"}}
+	verifier.On("RequestsFromProposal", mock.Anything).Return(inFlightRequests)
 	controller := &mocks.ViewController{}
 	viewNumChan := make(chan uint64)
 	seqNumChan := make(chan uint64)
@@ -1948,6 +1952,7 @@ func TestCommitInFlight(t *testing.T) {
 	reqTimer := &mocks.RequestsTimer{}
 	reqTimer.On("StopTimers")
 	reqTimer.On("RestartTimers")
+	reqTimer.On("RemoveRequest", mock.Anything).Return(nil)
 	checkpoint := types.Checkpoint{}
 	checkpoint.Set(lastDecision, lastDecisionSignatures)
 	app := &mocks.ApplicationMock{}
@@ -1961,6 +1966,7 @@ func TestCommitInFlight(t *testing.T) {
 	pruner := &mocks.Pruner{}
 	pruner.On("MaybePruneRevokedRequests")
 
+	histograms := &histogramsRecorder{}
 	sched := make(chan time.Time)
 	vc := &bft.ViewChanger{
 		SelfID:           1,
@@ -1981,7 +1987,7 @@ func TestCommitInFlight(t *testing.T) {
 		Application:      app,
 		Pruner:           pruner,
 		MetricsBlacklist: api.NewMetricsBlacklist(&disabled.Provider{}),
-		MetricsView:      api.NewMetricsView(&disabled.Provider{}),
+		MetricsView:      api.NewMetricsView(histograms),
 	}
 
 	vc.Start(0)
@@ -2060,8 +2066,53 @@ func TestCommitInFlight(t *testing.T) {
 
 	controller.AssertNumberOfCalls(t, "AbortView", 2)
 	pruner.AssertNumberOfCalls(t, "MaybePruneRevokedRequests", 1)
+	// the requests of the in flight proposal are removed from the pool once it is decided
+	for _, req := range inFlightRequests {
+		reqTimer.AssertCalled(t, "RemoveRequest", req)
+	}
+	// the time it took to process the in flight proposal is measured from when its view started
+	latencies := histograms.observed("view_latency_batch_processing")
+	assert.Len(t, latencies, 1)
+	for _, latency := range latencies {
+		assert.Less(t, latency, time.Minute.Seconds())
+	}
 
 	vc.Stop()
+}
+
+// histogramsRecorder is a metrics provider that records the values observed by its histograms.
+type histogramsRecorder struct {
+	disabled.Provider
+	lock   sync.Mutex
+	values map[string][]float64
+}
+
+func (p *histogramsRecorder) NewHistogram(opts metrics.HistogramOpts) metrics.Histogram {
+	return &recordedHistogram{recorder: p, name: opts.Name}
+}
+
+func (p *histogramsRecorder) observed(name string) []float64 {
+	p.lock.Lock()
+	defer p.lock.Unlock()
+	return slices.Clone(p.values[name])
+}
+
+type recordedHistogram struct {
+	recorder *histogramsRecorder
+	name     string
+}
+
+func (h *recordedHistogram) With(...string) metrics.Histogram {
+	return h
+}
+
+func (h *recordedHistogram) Observe(value float64) {
+	h.recorder.lock.Lock()
+	defer h.recorder.lock.Unlock()
+	if h.recorder.values == nil {
+		h.recorder.values = make(map[string][]float64)
+	}
+	h.recorder.values[h.name] = append(h.recorder.values[h.name], value)
 }
 
 func TestCommitWhileHavingInFlight(t *testing.T) {
