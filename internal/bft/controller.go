@@ -802,8 +802,10 @@ func (c *Controller) syncOnStart(startViewNumber uint64, startProposalSequence u
 	return viewNum, seq, decisions
 }
 
-// Start the controller
-func (c *Controller) Start(startViewNumber uint64, startProposalSequence uint64, startDecisionsInView uint64, syncOnStart bool) {
+// Start the controller.
+// The verificationSequence is the one the requests in the pool were last pruned against,
+// so that a later change of the Verifier's sequence prunes the pool again.
+func (c *Controller) Start(startViewNumber uint64, startProposalSequence uint64, startDecisionsInView uint64, verificationSequence uint64, syncOnStart bool) {
 	c.Logger.Debugf("Starting controller with view %d, sequence %d, and decisions %d", startViewNumber, startProposalSequence, startDecisionsInView)
 	c.controllerDone.Add(1)
 	c.stopOnce = sync.Once{}
@@ -818,7 +820,7 @@ func (c *Controller) Start(startViewNumber uint64, startProposalSequence uint64,
 	c.Logger.Debugf("The number of nodes (N) is %d, F is %d, and the quorum size is %d", c.N, F, Q)
 	c.quorum = Q
 
-	c.verificationSequence.Store(c.Verifier.VerificationSequence())
+	c.verificationSequence.Store(verificationSequence)
 
 	if syncOnStart {
 		startViewNumber, startProposalSequence, startDecisionsInView = c.syncOnStart(startViewNumber, startProposalSequence, startDecisionsInView)
