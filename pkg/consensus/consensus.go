@@ -157,7 +157,7 @@ func (c *Consensus) Start() error {
 
 	go c.run()
 
-	c.startComponents(view, seq, dec, true)
+	c.startComponents(view, seq, dec, c.Verifier.VerificationSequence(), true)
 
 	atomic.StoreUint64(&c.running, 1)
 
@@ -230,7 +230,11 @@ func (c *Consensus) reconfig(reconfig types.Reconfig) {
 	c.continueCreateComponents()
 
 	// Prune requests that are invalid under the new configuration now, while all components are stopped.
-	c.Logger.Infof("Pruning the request pool after reconfig")
+	// The application may install the new configuration asynchronously, so read the verification sequence
+	// before pruning and start the controller with it; if the sequence changes during or after the prune,
+	// the controller then sees the change and prunes again.
+	verificationSeq := c.Verifier.VerificationSequence()
+	c.Logger.Infof("Pruning the request pool after reconfig with verification sequence %d", verificationSeq)
 	c.Pool.Prune(func(req []byte) error {
 		_, err := c.Verifier.VerifyRequest(req)
 		return err
@@ -247,7 +251,7 @@ func (c *Consensus) reconfig(reconfig types.Reconfig) {
 
 	c.waitForEachOther()
 
-	c.startComponents(view, seq, dec, false)
+	c.startComponents(view, seq, dec, verificationSeq, false)
 
 	c.Pool.RestartTimers()
 
@@ -512,14 +516,14 @@ func (c *Consensus) waitForEachOther() {
 	c.controller.StartedWG = &c.viewChanger.ControllerStartedWG
 }
 
-func (c *Consensus) startComponents(view, seq, dec uint64, configSync bool) {
+func (c *Consensus) startComponents(view, seq, dec, verificationSeq uint64, configSync bool) {
 	// If we delivered to the application proposal with sequence i,
 	// then we are expecting to be proposed a proposal with sequence i+1.
 	c.collector.Start()
 	c.viewChanger.Start(view)
 	if configSync {
-		c.controller.Start(view, seq+1, dec, c.Config.SyncOnStart)
+		c.controller.Start(view, seq+1, dec, verificationSeq, c.Config.SyncOnStart)
 	} else {
-		c.controller.Start(view, seq+1, dec, false)
+		c.controller.Start(view, seq+1, dec, verificationSeq, false)
 	}
 }

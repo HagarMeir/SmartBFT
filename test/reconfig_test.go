@@ -138,6 +138,82 @@ func TestPoolPrunedAfterReconfig(t *testing.T) {
 	}
 }
 
+func TestPoolPrunedAfterAsyncReconfig(t *testing.T) {
+	// The follower installs the new config while the request pool is pruned during reconfig,
+	// so that prune still sees the old config and keeps a request that becomes invalid.
+	// The request must then be pruned on the next decision.
+
+	t.Parallel()
+	network := NewNetwork()
+	defer network.Shutdown()
+
+	testDir := t.TempDir()
+
+	// Long enough for the follower to never forward the request to the leader during the test
+	forwardTimeout := time.Minute
+
+	numberOfNodes := 4
+	nodes := make([]*App, 0)
+	for i := 1; i <= numberOfNodes; i++ {
+		n := newNode(uint64(i), network, t.Name(), testDir, false, 0)
+		n.Consensus.Config.RequestForwardTimeout = forwardTimeout
+		n.Consensus.Config.RequestComplainTimeout = 2 * forwardTimeout
+		n.clientsToRevoke = []string{"bob"}
+		nodes = append(nodes, n)
+	}
+
+	follower := nodes[1]
+	follower.revokeDuringPrune = true
+
+	startNodes(nodes, network)
+
+	follower.Submit(Request{ID: "1", ClientID: "bob"})
+	require.Equal(t, 1, follower.Consensus.Pool.Size())
+
+	newConfig := fastConfig
+	newConfig.RequestForwardTimeout = forwardTimeout
+	newConfig.RequestComplainTimeout = 2 * forwardTimeout
+
+	nodes[0].Submit(Request{
+		ClientID: "reconfig",
+		ID:       "10",
+		Reconfig: Reconfig{
+			InLatestDecision: true,
+			CurrentNodes:     nodesToInt(nodes[0].Node.Nodes()),
+			CurrentConfig:    recconfigToInt(types.Reconfig{CurrentConfig: newConfig}).CurrentConfig,
+		},
+	})
+
+	data := make([]*AppRecord, 0)
+	for i := range numberOfNodes {
+		d := <-nodes[i].Delivered
+		data = append(data, d)
+	}
+	for i := range numberOfNodes - 1 {
+		require.Equal(t, data[i], data[i+1])
+	}
+
+	// The prune during reconfig installed the new config but kept the request
+	require.Eventually(t, func() bool {
+		return follower.VerificationSequence() == 1
+	}, 10*time.Second, 100*time.Millisecond)
+	require.Equal(t, 1, follower.Consensus.Pool.Size())
+
+	nodes[0].Submit(Request{ID: "11", ClientID: "alice"})
+	data = make([]*AppRecord, 0)
+	for i := range numberOfNodes {
+		d := <-nodes[i].Delivered
+		data = append(data, d)
+	}
+	for i := range numberOfNodes - 1 {
+		require.Equal(t, data[i], data[i+1])
+	}
+
+	require.Eventually(t, func() bool {
+		return follower.Consensus.Pool.Size() == 0
+	}, 10*time.Second, 100*time.Millisecond)
+}
+
 func TestBasicAddNodes(t *testing.T) {
 	t.Parallel()
 	network := NewNetwork()

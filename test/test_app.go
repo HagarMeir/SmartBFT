@@ -65,8 +65,12 @@ type App struct {
 	verificationSeq uint64
 	clientsToRevoke []string // clients whose requests become invalid once a reconfig is delivered
 	revokedClients  sync.Map
-	messageLost     func(*smartbftprotos.Message) bool
-	lock            sync.Mutex
+	// revokeDuringPrune delays revoking the clients after a reconfig is delivered until the first request
+	// is verified afterwards, which models an application that installs the new config asynchronously
+	revokeDuringPrune bool
+	revokePending     atomic.Bool
+	messageLost       func(*smartbftprotos.Message) bool
+	lock              sync.Mutex
 }
 
 type lastRecord struct {
@@ -235,6 +239,9 @@ func (a *App) VerifyRequest(val []byte) (types.RequestInfo, error) {
 	if _, revoked := a.revokedClients.Load(req.ClientID); revoked {
 		return types.RequestInfo{}, fmt.Errorf("client %s is revoked", req.ClientID)
 	}
+	if a.revokePending.CompareAndSwap(true, false) {
+		a.revokeClients()
+	}
 	return types.RequestInfo{ID: req.ID, ClientID: req.ClientID}, nil
 }
 
@@ -321,7 +328,11 @@ func (a *App) Deliver(proposal types.Proposal, signatures []types.Signature) typ
 	for _, req := range record.Batch.Requests {
 		request := requestFromBytes(req)
 		if request.Reconfig.InLatestDecision {
-			a.revokeClients()
+			if a.revokeDuringPrune {
+				a.revokePending.Store(true)
+			} else {
+				a.revokeClients()
+			}
 			reconfig := request.Reconfig.recconfigToUint(a.ID)
 			return types.Reconfig{InLatestDecision: true, CurrentNodes: reconfig.CurrentNodes, CurrentConfig: reconfig.CurrentConfig}
 		}
