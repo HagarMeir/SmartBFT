@@ -533,21 +533,35 @@ func (c *Controller) decide(d decision) {
 	}
 	c.Logger.Debugf("Node %d delivered proposal", c.ID)
 	c.removeDeliveredFromPool(d)
-	if d.delivered != nil {
-		close(d.delivered)
-	}
+	close(d.delivered)
 	if c.stopped() {
 		return
 	}
-	if !c.isRunningCurrentView(d.view) {
-		// The view that decided was aborted or replaced while the decision was waiting
-		// to be delivered, so the decision must not be accounted to the current view,
-		// and the current view must not be rotated or lead because of it.
-		c.Logger.Debugf("Node %d delivered a decision from a view that is no longer running, skipping view bookkeeping", c.ID)
+
+	c.currViewLock.RLock()
+	currView := c.currView
+	c.currViewLock.RUnlock()
+
+	if d.view != currView {
+		// The view that decided was replaced while the decision was waiting to be delivered,
+		// and the decisions in the view were set when the current view started,
+		// so the decision must not be accounted to the current view.
+		c.Logger.Debugf("Node %d delivered a decision from a view that was replaced, skipping view bookkeeping", c.ID)
 		c.MaybePruneRevokedRequests()
 		return
 	}
 	c.incrementCurrentDecisionsInView()
+
+	if d.view.Stopped() {
+		// The view that decided was aborted but not replaced, so the decision still counts in this view,
+		// in case the view is restarted with the same number after a sync.
+		// However, rotating the leader would restart the aborted view, and an aborted view cannot propose,
+		// so do not rotate and do not acquire the leader token.
+		// Whichever view starts next acquires the leader token in startView if this node leads it.
+		c.Logger.Debugf("Node %d delivered a decision from a view that was aborted, skipping leader rotation", c.ID)
+		c.MaybePruneRevokedRequests()
+		return
+	}
 
 	md := &protos.ViewMetadata{}
 	if err := proto.Unmarshal(d.proposal.Metadata, md); err != nil {
@@ -564,19 +578,6 @@ func (c *Controller) decide(d decision) {
 	if iAm, _ := c.iAmTheLeader(); iAm {
 		c.acquireLeaderToken()
 	}
-}
-
-// isRunningCurrentView returns whether the given view is the current view and has not been stopped.
-func (c *Controller) isRunningCurrentView(view Proposer) bool {
-	if view == nil {
-		c.Logger.Panicf("Decision without a deciding view")
-	}
-
-	c.currViewLock.RLock()
-	currView := c.currView
-	c.currViewLock.RUnlock()
-
-	return view == currView && !view.Stopped()
 }
 
 func (c *Controller) checkIfRotate(blacklist []uint64) bool {

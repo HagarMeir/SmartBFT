@@ -1557,3 +1557,119 @@ func createNewViewMsgForDeliverTwiceTest(nextView uint64) *protos.Message {
 		},
 	}
 }
+
+// TestControllerKeepsRunningAfterDecideWaiterLeft makes sure that the controller keeps running
+// when the view that decided is aborted while the decision is being delivered,
+// so that the waiter in Decide has already left once the delivery completes.
+func TestControllerKeepsRunningAfterDecideWaiterLeft(t *testing.T) {
+	basicLog, err := zap.NewDevelopment()
+	require.NoError(t, err)
+	log := basicLog.Sugar()
+
+	delivering := make(chan struct{})
+	releaseDelivery := make(chan struct{})
+	app := &mocks.ApplicationMock{}
+	app.On("Deliver", mock.Anything, mock.Anything).Run(func(args mock.Arguments) {
+		close(delivering)
+		<-releaseDelivery
+	}).Return(types.Reconfig{InLatestDecision: false})
+	batcher := &mocks.Batcher{}
+	batcher.On("Close")
+	pool := &mocks.RequestPool{}
+	pool.On("Close")
+	leaderMon := &mocks.LeaderMonitor{}
+	leaderMon.On("ChangeRole", mock.Anything, mock.Anything, mock.Anything)
+	leaderMon.On("Close")
+	verifier := &mocks.VerifierMock{}
+	verifier.On("VerificationSequence").Return(uint64(1))
+
+	views := make(chan *fakeProposer, 2)
+	pb := &mocks.ProposerBuilder{}
+	pb.On("NewProposer", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+		Return(func(leader uint64, _ uint64, _ uint64, _ uint64, _ int) bft.Proposer {
+			view := &fakeProposer{leader: leader, abortChan: make(chan struct{})}
+			views <- view
+			return view
+		}, bft.Phase(bft.COMMITTED))
+
+	startedWG := sync.WaitGroup{}
+	startedWG.Add(1)
+
+	controller := &bft.Controller{
+		Checkpoint:      &types.Checkpoint{},
+		Batcher:         batcher,
+		RequestPool:     pool,
+		LeaderMonitor:   leaderMon,
+		ID:              3, // not the leader of view 0 nor of view 1
+		N:               4,
+		NodesList:       []uint64{1, 2, 3, 4},
+		Logger:          log,
+		Deliver:         app,
+		Verifier:        verifier,
+		ProposerBuilder: pb,
+		StartedWG:       &startedWG,
+	}
+
+	controller.Start(0, 1, 0, false)
+	view := <-views
+
+	decided := make(chan struct{})
+	go func() {
+		defer close(decided)
+		controller.Decide(types.Proposal{}, nil, nil)
+	}()
+
+	<-delivering
+	view.Abort()
+	<-decided // the waiter in Decide left since its view was aborted
+	close(releaseDelivery)
+
+	controller.ViewChanged(1, 2)
+	select {
+	case <-views:
+	case <-time.After(3 * time.Second):
+		require.Fail(t, "the controller did not start the next view after the decision was delivered")
+	}
+
+	controller.Stop()
+}
+
+// fakeProposer is a view that does nothing but can be aborted.
+type fakeProposer struct {
+	leader    uint64
+	abortChan chan struct{}
+	abortOnce sync.Once
+}
+
+func (*fakeProposer) Propose(types.Proposal) {}
+
+func (*fakeProposer) Start() {}
+
+func (p *fakeProposer) Abort() {
+	p.abortOnce.Do(func() {
+		close(p.abortChan)
+	})
+}
+
+func (p *fakeProposer) Stopped() bool {
+	select {
+	case <-p.abortChan:
+		return true
+	default:
+		return false
+	}
+}
+
+func (p *fakeProposer) AbortChan() <-chan struct{} {
+	return p.abortChan
+}
+
+func (p *fakeProposer) GetLeaderID() uint64 {
+	return p.leader
+}
+
+func (*fakeProposer) GetMetadata() []byte {
+	return nil
+}
+
+func (*fakeProposer) HandleMessage(uint64, *protos.Message) {}

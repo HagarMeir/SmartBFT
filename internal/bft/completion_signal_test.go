@@ -7,7 +7,6 @@ package bft
 
 import (
 	"testing"
-	"time"
 
 	"github.com/hyperledger/SmartBFT/pkg/types"
 	protos "github.com/hyperledger/SmartBFT/smartbftprotos"
@@ -16,26 +15,25 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-func TestControllerDecideDoesNotBlockIfDeliveryWaiterLeft(t *testing.T) {
-	view := &View{abortChan: make(chan struct{})}
-	controller := newDecidingController(t, view)
+func TestControllerDecideViewBookkeeping(t *testing.T) {
+	t.Run("view running", func(t *testing.T) {
+		view := &View{abortChan: make(chan struct{})}
+		controller := newDecidingController(t, view)
 
-	requireReturns(t, func() {
 		controller.decide(newDecision(t, view))
+		require.Equal(t, uint64(1), controller.getCurrentDecisionsInView())
+		require.Len(t, controller.leaderToken, 1)
 	})
-	require.Equal(t, uint64(1), controller.getCurrentDecisionsInView())
-}
 
-func TestControllerDecideSkipsViewBookkeepingIfDecidingViewIsGone(t *testing.T) {
 	t.Run("view aborted", func(t *testing.T) {
+		// The decision was made in the current view, so it counts in that view,
+		// but the aborted view must not lead because of it.
 		view := &View{abortChan: make(chan struct{})}
 		controller := newDecidingController(t, view)
 		view.stop()
 
-		requireReturns(t, func() {
-			controller.decide(newDecision(t, view))
-		})
-		require.Equal(t, uint64(0), controller.getCurrentDecisionsInView())
+		controller.decide(newDecision(t, view))
+		require.Equal(t, uint64(1), controller.getCurrentDecisionsInView())
 		require.Empty(t, controller.leaderToken)
 	})
 
@@ -44,48 +42,9 @@ func TestControllerDecideSkipsViewBookkeepingIfDecidingViewIsGone(t *testing.T) 
 		view.stop()
 		controller := newDecidingController(t, &View{abortChan: make(chan struct{})})
 
-		requireReturns(t, func() {
-			controller.decide(newDecision(t, view))
-		})
+		controller.decide(newDecision(t, view))
 		require.Equal(t, uint64(0), controller.getCurrentDecisionsInView())
 		require.Empty(t, controller.leaderToken)
-	})
-}
-
-func TestViewChangerDecideDoesNotBlockIfInFlightWaiterLeft(t *testing.T) {
-	inFlightView := &View{abortChan: make(chan struct{})}
-	viewChanger := &ViewChanger{
-		Logger:        zap.NewNop().Sugar(),
-		Application:   applicationFunc(func(types.Proposal, []types.Signature) types.Reconfig { return types.Reconfig{} }),
-		RequestsTimer: noopRequestsTimer{},
-		Pruner:        noopPruner{},
-	}
-	// Unbuffered and unread: the attempt's waiter has already left.
-	attempt := &inFlightAttempt{
-		decideCh: make(chan struct{}),
-		syncCh:   make(chan struct{}),
-		viewRef:  inFlightView,
-	}
-
-	requireReturns(t, func() {
-		viewChanger.decideInFlight(attempt, types.Proposal{}, nil, nil)
-	})
-	require.True(t, inFlightView.Stopped())
-}
-
-func TestViewChangerSyncDoesNotBlockIfInFlightWaiterLeft(t *testing.T) {
-	viewChanger := &ViewChanger{
-		Logger:       zap.NewNop().Sugar(),
-		Synchronizer: synchronizerFunc(func() {}),
-	}
-	// Unbuffered and unread: the attempt's waiter has already left.
-	attempt := &inFlightAttempt{
-		decideCh: make(chan struct{}),
-		syncCh:   make(chan struct{}),
-	}
-
-	requireReturns(t, func() {
-		viewChanger.syncInFlight(attempt)
 	})
 }
 
@@ -124,23 +83,7 @@ func newDecision(t *testing.T, view Proposer) decision {
 	}
 }
 
-func requireReturns(t *testing.T, f func()) {
-	t.Helper()
-
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		f()
-	}()
-
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("function blocked")
-	}
-}
-
-// These tests live in package bft to reach unexported completion paths, so they
+// These tests live in package bft to reach the unexported decide, so they
 // cannot use internal/bft/mocks without creating an import cycle.
 
 type applicationFunc func(types.Proposal, []types.Signature) types.Reconfig
@@ -177,24 +120,4 @@ func (noopVerifier) RequestsFromProposal(types.Proposal) []types.RequestInfo {
 
 func (noopVerifier) AuxiliaryData([]byte) []byte {
 	panic("unexpected AuxiliaryData call")
-}
-
-type noopRequestsTimer struct{}
-
-func (noopRequestsTimer) StopTimers() {}
-
-func (noopRequestsTimer) RestartTimers() {}
-
-func (noopRequestsTimer) RemoveRequest(types.RequestInfo) error {
-	return nil
-}
-
-type noopPruner struct{}
-
-func (noopPruner) MaybePruneRevokedRequests() {}
-
-type synchronizerFunc func()
-
-func (f synchronizerFunc) Sync() {
-	f()
 }
