@@ -3037,3 +3037,199 @@ func TestNewViewWithoutLeaderViewData(t *testing.T) {
 		})
 	}
 }
+
+// TestViewChangerKeepsRunningAfterInFlightWaiterLeft makes sure that the view changer keeps running
+// when the view of the in flight proposal decides or asks to sync only after the view changer
+// stopped waiting for it, because the view change timed out.
+func TestViewChangerKeepsRunningAfterInFlightWaiterLeft(t *testing.T) {
+	for _, testCase := range []struct {
+		name string
+		// finish makes the view of the in flight proposal decide or ask to sync
+		finish func(vc *bft.ViewChanger, inFlightProposal types.Proposal)
+		// sync tells whether the view of the in flight proposal calls the synchronizer
+		sync bool
+	}{
+		{
+			name: "decide",
+			finish: func(vc *bft.ViewChanger, inFlightProposal types.Proposal) {
+				for _, signer := range []uint64{0, 2} {
+					vc.HandleViewMessage(signer, &protos.Message{
+						Content: &protos.Message_Commit{
+							Commit: &protos.Commit{
+								View:      0,
+								Seq:       2,
+								Digest:    inFlightProposal.Digest(),
+								Signature: &protos.Signature{Signer: signer, Value: []byte{4}},
+							},
+						},
+					})
+				}
+			},
+		},
+		{
+			name: "sync",
+			finish: func(vc *bft.ViewChanger, inFlightProposal types.Proposal) {
+				// a commit from a newer view, as if sent by this node, which is the leader of the view of the in flight proposal
+				vc.HandleViewMessage(1, &protos.Message{
+					Content: &protos.Message_Commit{
+						Commit: &protos.Commit{
+							View:      1,
+							Seq:       2,
+							Digest:    inFlightProposal.Digest(),
+							Signature: &protos.Signature{Signer: 1, Value: []byte{4}},
+						},
+					},
+				})
+			},
+			sync: true,
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			msgChan := make(chan *protos.Message, 100)
+			comm := &mocks.CommMock{}
+			comm.On("BroadcastConsensus", mock.Anything).Run(func(args mock.Arguments) {
+				select {
+				case msgChan <- args.Get(0).(*protos.Message):
+				default:
+				}
+			})
+			basicLog, err := zap.NewDevelopment()
+			require.NoError(t, err)
+			log := basicLog.Sugar()
+			signer := &mocks.SignerMock{}
+			signer.On("Sign", mock.Anything).Return([]byte{1, 2, 3})
+			signed := make(chan struct{}, 1)
+			signer.On("SignProposal", mock.Anything, mock.Anything).Run(func(args mock.Arguments) {
+				signed <- struct{}{}
+			}).Return(&types.Signature{ID: 1, Value: []byte{4}})
+			verifier := &mocks.VerifierMock{}
+			verifier.On("VerifySignature", mock.Anything).Return(nil)
+			verifier.On("VerifyConsenterSig", mock.Anything, mock.Anything).Return(nil, nil)
+			verifier.On("RequestsFromProposal", mock.Anything).Return(nil)
+			controller := &mocks.ViewController{}
+			controller.On("ViewChanged", mock.Anything, mock.Anything).Maybe()
+			controller.On("AbortView", mock.Anything)
+			reqTimer := &mocks.RequestsTimer{}
+			reqTimer.On("StopTimers")
+			reqTimer.On("RestartTimers")
+			checkpoint := types.Checkpoint{}
+			checkpoint.Set(lastDecision, lastDecisionSignatures)
+			pruner := &mocks.Pruner{}
+			pruner.On("MaybePruneRevokedRequests")
+
+			// The view of the in flight proposal is held in the middle of deciding or syncing
+			// until the view changer times out and stops waiting for it.
+			finishing := make(chan struct{})
+			timedOut := make(chan struct{})
+			app := &mocks.ApplicationMock{}
+			app.On("Deliver", mock.Anything, mock.Anything).Run(func(args mock.Arguments) {
+				close(finishing)
+				<-timedOut
+			}).Return(types.Reconfig{InLatestDecision: false})
+			var syncCalls atomic.Int32
+			var timeoutOnce sync.Once
+			synchronizer := &mocks.Synchronizer{}
+			synchronizer.On("Sync").Run(func(args mock.Arguments) {
+				if testCase.sync && syncCalls.Add(1) == 1 {
+					close(finishing)
+					<-timedOut
+					return
+				}
+				timeoutOnce.Do(func() { close(timedOut) }) // the view changer calls sync once it times out
+			})
+
+			ticker := make(chan time.Time)
+			vc := &bft.ViewChanger{
+				SelfID:            1,
+				N:                 4,
+				NodesList:         []uint64{0, 1, 2, 3},
+				Comm:              comm,
+				Logger:            log,
+				Verifier:          verifier,
+				Controller:        controller,
+				Signer:            signer,
+				RequestsTimer:     reqTimer,
+				Ticker:            ticker,
+				ViewChangeTimeout: 10 * time.Second,
+				ResendTimeout:     time.Hour,
+				InFlight:          &bft.InFlightData{},
+				Checkpoint:        &checkpoint,
+				ViewSequences:     &atomic.Value{},
+				State:             &bft.StateRecorder{},
+				InMsqQSize:        int(types.DefaultConfig.IncomingMessageBufferSize),
+				Application:       app,
+				Synchronizer:      synchronizer,
+				Pruner:            pruner,
+				MetricsBlacklist:  api.NewMetricsBlacklist(&disabled.Provider{}),
+				MetricsView:       api.NewMetricsView(&disabled.Provider{}),
+			}
+
+			vc.Start(0)
+
+			vc.HandleMessage(2, viewChangeMsg)
+			vc.HandleMessage(3, viewChangeMsg)
+			waitForMessage(t, msgChan, func(m *protos.Message) bool { return m.GetViewChange() != nil })
+
+			inFlightProposal := types.Proposal{
+				Payload: []byte{1},
+				Header:  []byte{2},
+				Metadata: bft.MarshalOrPanic(&protos.ViewMetadata{
+					LatestSequence: 2,
+					ViewId:         0,
+				}),
+				VerificationSequence: 1,
+			}
+			viewData := proto.Clone(vd).(*protos.ViewData)
+			viewData.InFlightProposal = &protos.Proposal{
+				Payload:              inFlightProposal.Payload,
+				Header:               inFlightProposal.Header,
+				Metadata:             inFlightProposal.Metadata,
+				VerificationSequence: uint64(inFlightProposal.VerificationSequence),
+			}
+			viewData.InFlightPrepared = true
+			msg := proto.Clone(viewDataMsg1).(*protos.Message)
+			msg.GetViewData().RawViewData = bft.MarshalOrPanic(viewData)
+			vc.HandleMessage(0, msg)
+			msg2 := proto.Clone(msg).(*protos.Message)
+			msg2.GetViewData().Signer = 2
+			vc.HandleMessage(2, msg2)
+			waitForMessage(t, msgChan, func(m *protos.Message) bool { return m.GetNewView() != nil })
+
+			// the view of the in flight proposal starts after two ticks
+			<-signed
+			ticker <- time.Now()
+			ticker <- time.Now()
+			waitForMessage(t, msgChan, func(m *protos.Message) bool { return m.GetCommit() != nil })
+
+			testCase.finish(vc, inFlightProposal)
+			<-finishing
+
+			ticker <- time.Now().Add(time.Hour) // the view change times out
+
+			// the view changer is back in its main loop, and so it reads the ticker
+			select {
+			case ticker <- time.Now():
+			case <-time.After(3 * time.Second):
+				require.Fail(t, "the view changer is blocked by the view of the in flight proposal") // the view changer is stuck, so it cannot be stopped
+			}
+
+			vc.Stop()
+		})
+	}
+}
+
+func waitForMessage(t *testing.T, msgChan <-chan *protos.Message, match func(*protos.Message) bool) {
+	t.Helper()
+
+	timeout := time.After(3 * time.Second)
+	for {
+		select {
+		case m := <-msgChan:
+			if match(m) {
+				return
+			}
+		case <-timeout:
+			require.FailNow(t, "the expected message was not broadcast")
+		}
+	}
+}
